@@ -37,7 +37,14 @@ type TeamPlayerRecord = {
   display_order: number;
 };
 
-export default function TilePage({ params }: any) {
+type TilePageProps = {
+  params: Promise<{
+    slug: string;
+    tileId: string;
+  }>;
+};
+
+export default function TilePage({ params }: TilePageProps) {
   const { slug, tileId } = use(params);
   const router = useRouter();
 
