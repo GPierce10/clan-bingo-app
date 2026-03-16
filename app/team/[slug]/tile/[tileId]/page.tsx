@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../../../lib/supabase";
 
@@ -16,6 +16,7 @@ type TileRecord = {
   description: string | null;
   image_url: string | null;
   mvp_points: number;
+  show_clarification: boolean;
 };
 
 type SubmissionRecord = {
@@ -29,6 +30,7 @@ type SubmissionPlayerRecord = {
   id: string;
   player_name: string;
   points_awarded: number;
+  contribution_percent: number | null;
 };
 
 type TeamPlayerRecord = {
@@ -43,6 +45,70 @@ type TilePageProps = {
     tileId: string;
   }>;
 };
+
+function buildEqualPercents(playerNames: string[]) {
+  if (playerNames.length === 0) return {} as Record<string, number>;
+
+  const base = Math.floor(100 / playerNames.length);
+  let remainder = 100 - base * playerNames.length;
+
+  const result: Record<string, number> = {};
+
+  for (const name of playerNames) {
+    const extra = remainder > 0 ? 1 : 0;
+    result[name] = base + extra;
+    if (remainder > 0) remainder--;
+  }
+
+  return result;
+}
+
+function calculatePointsFromPercents(
+  totalPoints: number,
+  selectedPlayers: string[],
+  percents: Record<string, number>
+) {
+  if (selectedPlayers.length === 0) {
+    return {} as Record<string, number>;
+  }
+
+  const raw = selectedPlayers.map((player) => {
+    const percent = percents[player] ?? 0;
+    const exact = (totalPoints * percent) / 100;
+    const floored = Math.floor(exact);
+    const remainder = exact - floored;
+
+    return {
+      player,
+      floored,
+      remainder,
+    };
+  });
+
+  const result: Record<string, number> = {};
+  let used = 0;
+
+  for (const row of raw) {
+    result[row.player] = row.floored;
+    used += row.floored;
+  }
+
+  let leftover = totalPoints - used;
+
+  raw.sort((a, b) => {
+    if (b.remainder !== a.remainder) return b.remainder - a.remainder;
+    return a.player.localeCompare(b.player);
+  });
+
+  let i = 0;
+  while (leftover > 0 && raw.length > 0) {
+    result[raw[i].player] += 1;
+    leftover--;
+    i = (i + 1) % raw.length;
+  }
+
+  return result;
+}
 
 export default function TilePage({ params }: TilePageProps) {
   const { slug, tileId } = use(params);
@@ -62,6 +128,9 @@ export default function TilePage({ params }: TilePageProps) {
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState("");
   const [selectedPlayers, setSelectedPlayers] = useState<string[]>([]);
+  const [playerPercents, setPlayerPercents] = useState<Record<string, number>>(
+    {}
+  );
 
   useEffect(() => {
     const loadPage = async () => {
@@ -99,7 +168,7 @@ export default function TilePage({ params }: TilePageProps) {
 
       const { data: tileData, error: tileError } = await supabase
         .from("tiles")
-        .select("id, title, description, image_url, mvp_points")
+        .select("id, title, description, image_url, mvp_points, show_clarification")
         .eq("id", tileId)
         .single();
 
@@ -132,7 +201,7 @@ export default function TilePage({ params }: TilePageProps) {
 
         const { data: playerRows, error: playerError } = await supabase
           .from("submission_players")
-          .select("id, player_name, points_awarded")
+          .select("id, player_name, points_awarded, contribution_percent")
           .eq("submission_id", submissionData.id);
 
         if (playerError) {
@@ -154,12 +223,77 @@ export default function TilePage({ params }: TilePageProps) {
   }, [slug, tileId]);
 
   const togglePlayer = (playerName: string) => {
-    setSelectedPlayers((current) =>
-      current.includes(playerName)
-        ? current.filter((p) => p !== playerName)
-        : [...current, playerName]
-    );
+    setSelectedPlayers((current) => {
+      const exists = current.includes(playerName);
+
+      if (exists) {
+        const updated = current.filter((p) => p !== playerName);
+        const equalized = buildEqualPercents(updated);
+        setPlayerPercents(equalized);
+        return updated;
+      }
+
+      const updated = [...current, playerName];
+      const equalized = buildEqualPercents(updated);
+      setPlayerPercents(equalized);
+      return updated;
+    });
   };
+
+  const updatePercent = (playerName: string, value: string) => {
+    const parsed = Number(value);
+
+    setPlayerPercents((current) => ({
+      ...current,
+      [playerName]: Number.isFinite(parsed) ? parsed : 0,
+    }));
+  };
+
+  const percentTotal = useMemo(() => {
+    return selectedPlayers.reduce(
+      (sum, player) => sum + (playerPercents[player] ?? 0),
+      0
+    );
+  }, [selectedPlayers, playerPercents]);
+
+  const calculatedPoints = useMemo(() => {
+    if (!tile) return {} as Record<string, number>;
+
+    return calculatePointsFromPercents(
+      tile.mvp_points,
+      selectedPlayers,
+      playerPercents
+    );
+  }, [tile, selectedPlayers, playerPercents]);
+
+  const completedDisplayPoints = useMemo(() => {
+  if (!tile || submissionPlayers.length === 0) {
+    return {} as Record<string, number>;
+  }
+
+  const playersWithPercents = submissionPlayers.filter(
+    (player) => player.contribution_percent !== null
+  );
+
+  if (playersWithPercents.length !== submissionPlayers.length) {
+    return Object.fromEntries(
+      submissionPlayers.map((player) => [player.player_name, player.points_awarded])
+    );
+  }
+
+  const percents = Object.fromEntries(
+    playersWithPercents.map((player) => [
+      player.player_name,
+      player.contribution_percent ?? 0,
+    ])
+  );
+
+  return calculatePointsFromPercents(
+    tile.mvp_points,
+    playersWithPercents.map((player) => player.player_name),
+    percents
+  );
+}, [tile, submissionPlayers]);
 
   const handleSubmit = async () => {
     if (!team || !tile) return;
@@ -181,6 +315,19 @@ export default function TilePage({ params }: TilePageProps) {
       return;
     }
 
+    if (percentTotal !== 100) {
+      setStatus("Contribution percentages must total exactly 100.");
+      return;
+    }
+
+    for (const player of selectedPlayers) {
+      const pct = playerPercents[player] ?? 0;
+      if (!Number.isInteger(pct) || pct < 0) {
+        setStatus("All contribution percentages must be whole numbers 0 or higher.");
+        return;
+      }
+    }
+
     const { data: newSubmission, error: submissionError } = await supabase
       .from("submissions")
       .insert({
@@ -199,13 +346,12 @@ export default function TilePage({ params }: TilePageProps) {
       return;
     }
 
-    const splitPoints = Math.ceil(tile.mvp_points / selectedPlayers.length);
-
-const rows = selectedPlayers.map((player) => ({
-  submission_id: newSubmission.id,
-  player_name: player,
-  points_awarded: splitPoints,
-}));
+    const rows = selectedPlayers.map((player) => ({
+      submission_id: newSubmission.id,
+      player_name: player,
+      points_awarded: calculatedPoints[player] ?? 0,
+      contribution_percent: playerPercents[player] ?? 0,
+    }));
 
     const { error: playersError } = await supabase
       .from("submission_players")
@@ -259,9 +405,16 @@ const rows = selectedPlayers.map((player) => ({
       <div className="max-w-2xl mx-auto space-y-6">
         <div>
           <h1 className="text-3xl font-bold">{tile?.title ?? "Tile"}</h1>
-          {tile?.description && (
-            <p className="text-zinc-400 mt-2">{tile.description}</p>
-          )}
+          {tile?.show_clarification && tile?.description && (
+  <div className="mt-4 rounded-xl border border-yellow-500/40 bg-yellow-500/10 p-4">
+    <div className="text-sm font-bold text-yellow-300 mb-1">
+      Tile Clarification
+    </div>
+    <div className="text-sm text-yellow-100 whitespace-pre-wrap">
+      {tile.description}
+    </div>
+  </div>
+)}
           {tile && (
             <p className="text-zinc-500 mt-2">MVP Points: {tile.mvp_points}</p>
           )}
@@ -298,10 +451,15 @@ const rows = selectedPlayers.map((player) => ({
                       key={player.id}
                       className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900 p-3"
                     >
-                      <span>{player.player_name}</span>
-                      <span className="text-zinc-400">
-                        {player.points_awarded} pts
+                      <span>
+                        {player.player_name}
+                        {player.contribution_percent !== null
+                          ? ` (${player.contribution_percent}%)`
+                          : ""}
                       </span>
+                      <span className="text-zinc-400">
+  {completedDisplayPoints[player.player_name] ?? player.points_awarded} pts
+</span>
                     </div>
                   ))}
                 </div>
@@ -351,30 +509,61 @@ const rows = selectedPlayers.map((player) => ({
                   No team roster found. Add players in Admin first.
                 </div>
               ) : (
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="space-y-3">
                   {teamPlayers.map((player) => {
                     const checked = selectedPlayers.includes(player.player_name);
 
                     return (
-                      <label
+                      <div
                         key={player.id}
-                        className={`flex items-center gap-3 rounded border p-3 cursor-pointer ${
+                        className={`rounded border p-3 ${
                           checked
                             ? "border-green-500 bg-green-950/30"
                             : "border-zinc-700 bg-zinc-950"
                         }`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => togglePlayer(player.player_name)}
-                        />
-                        <span>{player.player_name}</span>
-                      </label>
+                        <label className="flex items-center gap-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => togglePlayer(player.player_name)}
+                          />
+                          <span>{player.player_name}</span>
+                        </label>
+
+                        {checked && (
+                          <div className="mt-3">
+                            <label className="block mb-2 text-sm text-zinc-400">
+                              Contribution %
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              className="w-full rounded border border-zinc-700 bg-zinc-900 p-3"
+                              value={playerPercents[player.player_name] ?? 0}
+                              onChange={(e) =>
+                                updatePercent(player.player_name, e.target.value)
+                              }
+                            />
+                            <div className="text-xs text-zinc-400 mt-2">
+                              Calculated MVP:{" "}
+                              {calculatedPoints[player.player_name] ?? 0}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
               )}
+            </div>
+
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+              <div className="text-sm text-zinc-400">Assigned Percentage</div>
+              <div className="text-lg font-semibold">
+                {percentTotal}% / 100%
+              </div>
             </div>
 
             <div>

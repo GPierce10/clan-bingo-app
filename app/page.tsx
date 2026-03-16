@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { supabase } from "../lib/supabase";
 import LiveRefresh from "../components/LiveRefresh";
+import HomeMvpPopover from "../components/HomeMvpPopover";
 
 type TeamStanding = {
   id: string;
@@ -14,21 +15,17 @@ type TeamStanding = {
 type MvpStanding = {
   player_name: string;
   points: number;
+  tiles: {
+    tile_title: string;
+    points_awarded: number;
+    team_name: string;
+  }[];
 };
 
 function getTeamRankClasses(index: number) {
-  if (index === 0) {
-    return "bg-yellow-500/15 border-yellow-400/40";
-  }
-
-  if (index === 1) {
-    return "bg-zinc-300/10 border-zinc-300/30";
-  }
-
-  if (index === 2) {
-    return "bg-amber-700/15 border-amber-600/40";
-  }
-
+  if (index === 0) return "bg-yellow-500/15 border-yellow-400/40";
+  if (index === 1) return "bg-zinc-300/10 border-zinc-300/30";
+  if (index === 2) return "bg-amber-700/15 border-amber-600/40";
   return "";
 }
 
@@ -195,22 +192,56 @@ export default async function Home() {
   });
 
   const teamsAlphabetical = [...standings].sort((a, b) =>
-  a.name.localeCompare(b.name)
-);
+    a.name.localeCompare(b.name)
+  );
 
-  const mvpMap = new Map<string, number>();
+  const submissionMap = new Map(
+    submissions.map((submission) => [submission.id, submission])
+  );
+  const tileMap = new Map(tiles.map((tile) => [tile.id, tile]));
+  const teamMap = new Map(teams.map((team) => [team.id, team]));
+
+  const mvpAggregate = new Map<string, MvpAggregateEntry>();
+
+  type MvpTileBreakdown = {
+  tile_title: string;
+  points_awarded: number;
+  team_name: string;
+};
+
+type MvpAggregateEntry = {
+  player_name: string;
+  points: number;
+  tiles: MvpTileBreakdown[];
+};
 
   for (const row of submissionPlayers) {
-    const current = mvpMap.get(row.player_name) ?? 0;
-    mvpMap.set(row.player_name, current + row.points_awarded);
+    const current: MvpAggregateEntry = mvpAggregate.get(row.player_name) ?? {
+  player_name: row.player_name,
+  points: 0,
+  tiles: [],
+};
+
+    const submission = submissionMap.get(row.submission_id);
+    const tile = submission ? tileMap.get(submission.tile_id) : null;
+    const team = submission ? teamMap.get(submission.team_id) : null;
+
+    current.points += row.points_awarded;
+    current.tiles.push({
+      tile_title: tile?.title ?? "Unknown Tile",
+      points_awarded: row.points_awarded,
+      team_name: team?.name ?? "Unknown Team",
+    });
+
+    mvpAggregate.set(row.player_name, current);
   }
 
-  const mvpStandings: MvpStanding[] = Array.from(mvpMap.entries())
-    .map(([player_name, points]) => ({ player_name, points }))
-    .sort((a, b) => {
+  const mvpStandings: MvpStanding[] = Array.from(mvpAggregate.values()).sort(
+    (a, b) => {
       if (b.points !== a.points) return b.points - a.points;
       return a.player_name.localeCompare(b.player_name);
-    });
+    }
+  );
 
   const latestSubmission =
     submissions.length > 0
@@ -244,8 +275,6 @@ export default async function Home() {
           Leaderboard, team boards, MVP standings, and event progress.
         </p>
 
-        
-
         <div className="grid gap-8 xl:grid-cols-[2fr_1fr]">
           <section>
             <h2 className="text-2xl font-semibold mb-4">Leaderboard</h2>
@@ -276,7 +305,10 @@ export default async function Home() {
                         </td>
 
                         <td className="p-3 font-semibold">
-                          <div className="flex items-center gap-3">
+                          <Link
+                            href={`/team/${team.slug}`}
+                            className="flex items-center gap-3 hover:underline"
+                          >
                             {team.logo_url && (
                               <img
                                 src={team.logo_url}
@@ -285,7 +317,7 @@ export default async function Home() {
                               />
                             )}
                             {team.name}
-                          </div>
+                          </Link>
                         </td>
 
                         <td className="p-3">{team.bingos}</td>
@@ -303,51 +335,17 @@ export default async function Home() {
             <p className="text-xs text-zinc-400 mb-4">Top 5 players</p>
 
             <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
-              <div className="divide-y divide-zinc-800">
-                {mvpStandings.length === 0 ? (
-                  <div className="p-4 text-zinc-400">No MVP points yet.</div>
-                ) : (
-                  mvpStandings.slice(0, 5).map((player, index) => {
-                    const isFirst = index === 0;
-
-                    return (
-                      <div
-                        key={`${player.player_name}-${index}`}
-                        className={`flex items-center justify-between p-4 ${
-                          isFirst ? "bg-yellow-500/15" : ""
-                        }`}
-                      >
-                        <div
-                          className={`font-semibold ${
-                            isFirst ? "text-yellow-300" : ""
-                          }`}
-                        >
-                          {isFirst ? "🥇 " : `${index + 1}. `}
-                          {player.player_name}
-                        </div>
-
-                        <div
-                          className={`font-bold ${
-                            isFirst ? "text-yellow-300" : "text-zinc-300"
-                          }`}
-                        >
-                          {player.points}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              <HomeMvpPopover players={mvpStandings} />
             </div>
           </section>
         </div>
 
-<section className="mt-6">
+        <section className="mt-10">
           <h2 className="text-2xl font-semibold mb-4">
             🔥 Latest Tile Completion
           </h2>
 
-          <div className="rounded-2xl border border-zinc-800 bg-gradient-to-r from-zinc-900 to-zinc-800 p-5">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
             {!latestSubmission || !latestTeam || !latestTile ? (
               <p className="text-zinc-400">No tile completions yet.</p>
             ) : (
@@ -405,7 +403,6 @@ export default async function Home() {
           </div>
         </section>
 
-
         <section className="mt-10">
           <h2 className="text-2xl font-semibold mb-4">Teams</h2>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -413,7 +410,7 @@ export default async function Home() {
               <Link
                 key={team.id}
                 href={`/team/${team.slug}`}
-                className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 hover:bg-zinc-800 transition"
+                className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 hover:bg-zinc-800 hover:scale-[1.02] transition"
               >
                 <div className="flex items-center gap-3">
                   {team.logo_url && (

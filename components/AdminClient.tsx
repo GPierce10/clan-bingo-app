@@ -3,14 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-
-
 type EventRecord = {
   id: string;
   name: string;
   board_rows: number;
   board_cols: number;
   is_active: boolean;
+  rules_text: string | null;
 };
 
 type TileRecord = {
@@ -22,6 +21,7 @@ type TileRecord = {
   description: string | null;
   image_url: string | null;
   mvp_points: number;
+  show_clarification: boolean;
 };
 
 type TeamRecord = {
@@ -48,6 +48,7 @@ type NewTileForm = {
   description: string;
   image_url: string;
   mvp_points: string;
+  show_clarification: boolean;
 };
 
 type NewRosterPlayerForm = {
@@ -57,18 +58,57 @@ type NewRosterPlayerForm = {
   };
 };
 
+function calculatePointsFromPercents(
+  totalPoints: number,
+  selectedPlayers: string[],
+  percents: Record<string, number>
+) {
+  if (selectedPlayers.length === 0) {
+    return {} as Record<string, number>;
+  }
 
+  const raw = selectedPlayers.map((player) => {
+    const percent = percents[player] ?? 0;
+    const exact = (totalPoints * percent) / 100;
+    const floored = Math.floor(exact);
+    const remainder = exact - floored;
 
+    return {
+      player,
+      floored,
+      remainder,
+    };
+  });
 
+  const result: Record<string, number> = {};
+  let used = 0;
 
+  for (const row of raw) {
+    result[row.player] = row.floored;
+    used += row.floored;
+  }
 
-export default function AdminPage() {
+  let leftover = totalPoints - used;
 
+  raw.sort((a, b) => {
+    if (b.remainder !== a.remainder) return b.remainder - a.remainder;
+    return a.player.localeCompare(b.player);
+  });
 
+  let i = 0;
+  while (leftover > 0 && raw.length > 0) {
+    result[raw[i].player] += 1;
+    leftover--;
+    i = (i + 1) % raw.length;
+  }
 
-  
+  return result;
+}
+
+export default function AdminClient() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
+
   const [eventRecord, setEventRecord] = useState<EventRecord | null>(null);
   const [tiles, setTiles] = useState<TileRecord[]>([]);
   const [teams, setTeams] = useState<TeamRecord[]>([]);
@@ -77,6 +117,7 @@ export default function AdminPage() {
   const [eventName, setEventName] = useState("");
   const [boardRows, setBoardRows] = useState("6");
   const [boardCols, setBoardCols] = useState("6");
+  const [rulesText, setRulesText] = useState("");
 
   const [newTile, setNewTile] = useState<NewTileForm>({
     row_index: "",
@@ -85,6 +126,7 @@ export default function AdminPage() {
     description: "",
     image_url: "",
     mvp_points: "1",
+    show_clarification: false,
   });
 
   const [newRosterPlayers, setNewRosterPlayers] = useState<NewRosterPlayerForm>(
@@ -124,7 +166,7 @@ export default function AdminPage() {
 
     const { data: activeEvent, error: eventError } = await supabase
       .from("events")
-      .select("id, name, board_rows, board_cols, is_active")
+      .select("id, name, board_rows, board_cols, is_active, rules_text")
       .eq("is_active", true)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -140,11 +182,12 @@ export default function AdminPage() {
     setEventName(activeEvent.name);
     setBoardRows(String(activeEvent.board_rows));
     setBoardCols(String(activeEvent.board_cols));
+    setRulesText(activeEvent.rules_text ?? "");
 
     const { data: tileRows, error: tilesError } = await supabase
       .from("tiles")
       .select(
-        "id, event_id, row_index, col_index, title, description, image_url, mvp_points"
+        "id, event_id, row_index, col_index, title, description, image_url, mvp_points, show_clarification"
       )
       .eq("event_id", activeEvent.id);
 
@@ -217,9 +260,10 @@ export default function AdminPage() {
         name: eventName,
         board_rows: parsedRows,
         board_cols: parsedCols,
+        rules_text: rulesText,
       })
       .eq("id", eventRecord.id)
-      .select("id, name, board_rows, board_cols, is_active")
+      .select("id, name, board_rows, board_cols, is_active, rules_text")
       .single();
 
     if (error || !data) {
@@ -234,7 +278,7 @@ export default function AdminPage() {
   const updateTileField = (
     tileId: string,
     field: keyof TileRecord,
-    value: string | number | null
+    value: string | number | boolean | null
   ) => {
     setTiles((current) =>
       current.map((tile) =>
@@ -255,6 +299,7 @@ export default function AdminPage() {
         description: tile.description,
         image_url: tile.image_url,
         mvp_points: Number(tile.mvp_points),
+        show_clarification: tile.show_clarification,
       })
       .eq("id", tile.id);
 
@@ -327,6 +372,7 @@ export default function AdminPage() {
       description: newTile.description.trim() || null,
       image_url: newTile.image_url.trim() || null,
       mvp_points: parsedMvp,
+      show_clarification: newTile.show_clarification,
     });
 
     if (error) {
@@ -341,6 +387,7 @@ export default function AdminPage() {
       description: "",
       image_url: "",
       mvp_points: "1",
+      show_clarification: false,
     });
 
     setStatus("Tile added.");
@@ -510,7 +557,7 @@ export default function AdminPage() {
 
       const { data: playersForSubmission, error: playersError } = await supabase
         .from("submission_players")
-        .select("id")
+        .select("id, player_name, contribution_percent")
         .eq("submission_id", submission.id);
 
       if (playersError) {
@@ -518,18 +565,55 @@ export default function AdminPage() {
         return;
       }
 
-      const playerCount = playersForSubmission?.length ?? 0;
-      const splitPoints =
-        playerCount > 0 ? Math.ceil(tilePoints / playerCount) : 0;
+      const players = playersForSubmission ?? [];
 
-      const { error: updateError } = await supabase
-        .from("submission_players")
-        .update({ points_awarded: splitPoints })
-        .eq("submission_id", submission.id);
+      if (players.length === 0) {
+        continue;
+      }
 
-      if (updateError) {
-        setStatus(updateError.message);
-        return;
+      const allHavePercents = players.every(
+        (player) => player.contribution_percent !== null
+      );
+
+      if (allHavePercents) {
+        const percents = Object.fromEntries(
+          players.map((player) => [
+            player.player_name,
+            player.contribution_percent ?? 0,
+          ])
+        );
+
+        const calculatedPoints = calculatePointsFromPercents(
+          tilePoints,
+          players.map((player) => player.player_name),
+          percents
+        );
+
+        for (const player of players) {
+          const { error: updateError } = await supabase
+            .from("submission_players")
+            .update({
+              points_awarded: calculatedPoints[player.player_name] ?? 0,
+            })
+            .eq("id", player.id);
+
+          if (updateError) {
+            setStatus(updateError.message);
+            return;
+          }
+        }
+      } else {
+        const splitPoints = Math.ceil(tilePoints / players.length);
+
+        const { error: updateError } = await supabase
+          .from("submission_players")
+          .update({ points_awarded: splitPoints })
+          .eq("submission_id", submission.id);
+
+        if (updateError) {
+          setStatus(updateError.message);
+          return;
+        }
       }
     }
 
@@ -563,7 +647,7 @@ export default function AdminPage() {
             <div>
               <h2 className="text-2xl font-semibold mb-2">Event Settings</h2>
               <p className="text-zinc-400 text-sm">
-                Update the active event name and board dimensions.
+                Update the active event name, board dimensions, and rules.
               </p>
             </div>
 
@@ -608,6 +692,16 @@ export default function AdminPage() {
                 onChange={(e) => setBoardCols(e.target.value)}
               />
             </div>
+          </div>
+
+          <div className="mt-5">
+            <label className="block mb-2 text-sm text-zinc-400">Rules</label>
+            <textarea
+              className="w-full min-h-[240px] rounded border border-zinc-700 bg-zinc-950 p-3"
+              value={rulesText}
+              onChange={(e) => setRulesText(e.target.value)}
+              placeholder="Add overall bingo rules, scoring notes, proof requirements, tile clarifications, etc."
+            />
           </div>
 
           <button
@@ -917,7 +1011,7 @@ export default function AdminPage() {
 
             <div className="md:col-span-2 xl:col-span-3">
               <label className="block mb-2 text-sm text-zinc-400">
-                Description
+                Tile Clarification / Rules
               </label>
               <textarea
                 className="w-full rounded border border-zinc-700 bg-zinc-950 p-3"
@@ -928,8 +1022,23 @@ export default function AdminPage() {
                     description: e.target.value,
                   }))
                 }
-                placeholder="Optional description"
+                placeholder="Optional tile clarification"
               />
+              <label className="flex items-center gap-3 mt-3">
+                <input
+                  type="checkbox"
+                  checked={newTile.show_clarification}
+                  onChange={(e) =>
+                    setNewTile((current) => ({
+                      ...current,
+                      show_clarification: e.target.checked,
+                    }))
+                  }
+                />
+                <span className="text-sm text-zinc-300">
+                  Show clarification on tile page and hover
+                </span>
+              </label>
             </div>
 
             <div className="md:col-span-2 xl:col-span-3">
@@ -1040,7 +1149,7 @@ export default function AdminPage() {
 
                   <div className="md:col-span-2 xl:col-span-4">
                     <label className="block mb-2 text-sm text-zinc-400">
-                      Description
+                      Tile Clarification / Rules
                     </label>
                     <textarea
                       className="w-full rounded border border-zinc-700 bg-zinc-900 p-3"
@@ -1049,6 +1158,22 @@ export default function AdminPage() {
                         updateTileField(tile.id, "description", e.target.value)
                       }
                     />
+                    <label className="flex items-center gap-3 mt-3">
+                      <input
+                        type="checkbox"
+                        checked={tile.show_clarification}
+                        onChange={(e) =>
+                          updateTileField(
+                            tile.id,
+                            "show_clarification",
+                            e.target.checked
+                          )
+                        }
+                      />
+                      <span className="text-sm text-zinc-300">
+                        Show clarification on tile page and hover
+                      </span>
+                    </label>
                   </div>
 
                   <div className="md:col-span-2 xl:col-span-4">
