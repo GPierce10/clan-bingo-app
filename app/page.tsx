@@ -407,33 +407,28 @@ type MvpAggregateEntry = {
         </section>
 
         <section className="mt-10">
-          <h2 className="text-2xl font-semibold mb-4">Teams</h2>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {teamsAlphabetical.map((team) => (
-              <Link
-                key={team.id}
-                href={`/team/${team.slug}`}
-                className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 hover:bg-zinc-800 hover:scale-[1.02] transition"
-              >
-                <div className="flex items-center gap-3">
-                  {team.logo_url && (
-                    <img
-                      src={team.logo_url}
-                      alt={team.name}
-                      className="w-8 h-8 rounded object-contain"
-                    />
-                  )}
-
-                  <span className="text-xl font-semibold">{team.name}</span>
-                </div>
-
-                <div className="text-zinc-400 mt-1">
-                  {team.bingos} bingos • {team.tiles} tiles
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
+  <h2 className="text-2xl font-semibold mb-4">Teams</h2>
+  <div className="grid gap-4 grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+    {teamsAlphabetical.map((team) => (
+      <Link
+        key={team.id}
+        href={`/team/${team.slug}`}
+        className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 hover:bg-zinc-800 hover:scale-[1.02] transition flex items-center justify-center"
+        title={team.name}
+      >
+        {team.logo_url ? (
+          <img
+            src={team.logo_url}
+            alt={team.name}
+            className="w-40 h-40 object-contain"
+          />
+        ) : (
+          <div className="text-sm text-zinc-500 text-center">{team.name}</div>
+        )}
+      </Link>
+    ))}
+  </div>
+</section>
       </div>
     </main>
   );
