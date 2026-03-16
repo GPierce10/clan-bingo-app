@@ -3,6 +3,9 @@ import { supabase } from "../lib/supabase";
 import LiveRefresh from "../components/LiveRefresh";
 import HomeMvpPopover from "../components/HomeMvpPopover";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type TeamStanding = {
   id: string;
   name: string;
