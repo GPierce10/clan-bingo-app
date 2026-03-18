@@ -245,7 +245,7 @@ export default async function TeamPage({ params }: TeamPageProps) {
                 <img
                   src={team.logo_url}
                   alt={team.name}
-                  className="w-12 h-12 rounded object-contain"
+                  className="w-10 h-10 rounded object-contain"
                 />
               )}
 
